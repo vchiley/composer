@@ -95,7 +95,9 @@ def deeplabv3(num_classes: int,
              https://download.openmmlab.com/mmcv/dist/{cu_version}/{torch_version}/index.html where {cu_version} and
              {torch_version} refer to your CUDA and PyTorch versions, respectively. To install mmsegmentation, please
              run pip install mmsegmentation==0.22.0 on command-line.""")) from e
-    norm_type = 'SyncBN' if sync_bn else 'BN'
+
+    world_size = dist.get_world_size()
+    norm_type = 'SyncBN' if sync_bn and world_size > 1 else 'BN'
     norm_cfg = {'type': norm_type, 'requires_grad': True}
     if use_plus:
         # mmseg config:
@@ -134,15 +136,15 @@ def deeplabv3(num_classes: int,
             else:
                 model.apply(initializer_fn)
 
-    if sync_bn:
-        ranks_to_sync = 4
-        world_size = dist.get_world_size()
+    if sync_bn and world_size > 1:
         ranks = list(range(world_size))
-        sync_groups = list(range(world_size // ranks_to_sync))
-        rank_groups = [ranks[(i * ranks_to_sync):((i + 1) * ranks_to_sync)] for i in sync_groups]
-        process_groups = [torch.distributed.new_group(pids) for pids in rank_groups]
-        process_group = process_groups[dist.get_global_rank() // ranks_to_sync]
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model, process_group=process_group)
+        sync_groups = list(range(8))  # based on total batch size (128) and target batch size (16)
+        if len(ranks) > len(sync_groups):
+            ranks_to_sync = len(ranks) // len(sync_groups)
+            rank_groups = [ranks[(i * ranks_to_sync):((i + 1) * ranks_to_sync)] for i in sync_groups]
+            process_groups = [torch.distributed.new_group(pids) for pids in rank_groups]
+            process_group = process_groups[dist.get_global_rank() // ranks_to_sync]
+            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model, process_group=process_group)
 
     return model
 
