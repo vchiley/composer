@@ -16,6 +16,7 @@ from composer.loss import DiceLoss, soft_cross_entropy
 from composer.metrics import CrossEntropy, MIoU
 from composer.models.initializers import Initializer
 from composer.models.tasks import ComposerClassifier
+from composer.utils import dist
 
 __all__ = ['deeplabv3', 'composer_deeplabv3']
 
@@ -134,7 +135,14 @@ def deeplabv3(num_classes: int,
                 model.apply(initializer_fn)
 
     if sync_bn:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        ranks_to_sync = 4
+        world_size = dist.get_world_size()
+        ranks = list(range(world_size))
+        sync_groups = list(range(world_size // ranks_to_sync))
+        rank_groups = [ranks[(i * ranks_to_sync):((i + 1) * ranks_to_sync)] for i in sync_groups]
+        process_groups = [torch.distributed.new_group(pids) for pids in rank_groups]
+        process_group = process_groups[dist.get_global_rank() // ranks_to_sync]
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model, process_group=process_group)
 
     return model
 
