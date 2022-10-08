@@ -18,7 +18,7 @@ Example:
 # Before submitting
 - [ ] Have you read the [contributor guidelines](https://github.com/mosaicml/composer/blob/dev/CONTRIBUTING.md)?
 - [ ] Is this change a documentation change or typo fix? If so, skip the rest of this checklist.
-- [ ] Was this change discussed/approved in a GitHub issue first? It is much more likely to be merged if so.
+- [ ] Was this change discussed/approved in a GitHub or Jira issue first? It is much more likely to be merged if so.
 - [ ] Did you update any related docs and document your change?
 - [ ] Did you update any related tests and add any new tests related to your change? (see [testing](https://github.com/mosaicml/composer/blob/dev/CONTRIBUTING.md#running-tests))
 - [ ] Did you run the tests locally to make sure they pass?
