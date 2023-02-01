@@ -334,20 +334,25 @@ def prepare_fsdp_module(model: torch.nn.Module, optimizers: Optional[Union[torch
                     else:
                         return is_large
 
-            fsdp_obj = FullyShardedDataParallel(
-                obj,
-                sharding_strategy=sharding_strategy,
-                auto_wrap_policy=_auto_wrap_policy,
-                cpu_offload=cpu_offload,
-                mixed_precision=mixed_precision,
-                backward_prefetch=backward_prefetch,
-                ignored_modules=ignored_modules,
-                param_init_fn=_param_init_fn,
-                device_id=torch.cuda.current_device(),
-                sync_module_states=sync_module_states,
-                forward_prefetch=forward_prefetch,
-                limit_all_gathers=limit_all_gathers,
-            )
+            fsdp_kwargs = {
+                "sharding_strategy": sharding_strategy,
+                "cpu_offload": cpu_offload,
+                "mixed_precision": mixed_precision,
+                "backward_prefetch": backward_prefetch,
+                "ignored_modules": ignored_modules,
+                "param_init_fn": _param_init_fn,
+                "device_id": torch.cuda.current_device(),
+                "sync_module_states": sync_module_states,
+                "forward_prefetch": forward_prefetch,
+                "limit_all_gathers": limit_all_gathers,
+            }
+
+            if hasattr(obj, "fsdp_custom_wrap"):
+                obj.fsdp_custom_wrap(obj, fsdp_kwargs)
+            else:
+                fsdp_kwargs['auto_wrap_policy'] = _auto_wrap_policy
+
+            fsdp_obj = FullyShardedDataParallel(obj, **fsdp_kwargs)
 
             # Activation Checkpointing
             if activation_checkpointing or activation_cpu_offload:
