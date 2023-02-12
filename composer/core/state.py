@@ -104,7 +104,6 @@ class State(Serializable):
     restore the trainer and continue training from a checkpoint.  :mod:`~composer.algorithms` are able to modify an
     instance of this class in-place.
 
-
     .. note::
 
         An instance of this class is automatically constructed by the :class:`~.Trainer` constructor. A user need
@@ -944,6 +943,17 @@ class State(Serializable):
                 self._load_dataset_state(serialized_value)
             elif attribute_name == 'optimizers':
                 self.load_optim_state(state)
+            elif attribute_name == 'train_metrics':
+                state_field_value = getattr(self, attribute_name)
+                for metric_name, metric in serialized_value.items():
+                    state_field_value[metric_name] = metric
+                    metric._device = self.device._device
+            elif attribute_name == 'eval_metrics':
+                state_field_value = getattr(self, attribute_name)
+                for eval_key, eval_metrics in serialized_value.items():
+                    for metric_name, metric in eval_metrics.items():
+                        state_field_value[eval_key][metric_name] = metric
+                        metric._device = self.device._device
             elif attribute_name in _STATE_DICT_SERIALIZED_ATTRIBUTES:
                 state_field_value = getattr(self, attribute_name)
                 for target in ensure_tuple(state_field_value):
