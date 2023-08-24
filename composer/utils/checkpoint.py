@@ -908,9 +908,8 @@ def save_checkpoint(
                 renamed_optimizers = {}
                 for k, v in optimizers_state_dict[optimizer]['state'].items():
                     replace_key = k
-                    for _k, _r in name_conversion_dict.items():
-                        if _k in k:
-                            replace_key = replace_key.replace(_k, _r)
+                    if k in name_conversion_dict.keys():
+                        replace_key = name_conversion_dict[k]
                     renamed_optimizers[replace_key] = v 
                 optimizers[optimizer]['state'] = renamed_optimizers
 
