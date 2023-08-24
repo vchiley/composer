@@ -295,6 +295,47 @@ def load_checkpoint(
     return rng_state_dicts
 
 
+def get_name_conversion_dict(state):
+    name_conversion_dict = {}
+    world_size = dist.get_world_size()
+    for m_n, m in state.model.named_modules():
+        if hasattr(m, 'process_group'):
+            pg = m.process_group
+            pgs = torch.distributed.get_world_size(pg)
+            if pgs != world_size:
+                pgidx = dist.get_global_rank() % pgs
+                _m_n = m_n.replace('_fsdp_wrapped_module.', '')
+                for k in m.state_dict().keys():
+                    name_conversion_dict['.'.join((_m_n, k))] = '.'.join((_m_n, k + f'_pgidx{pgidx}'))
+    return name_conversion_dict
+
+
+def convert_model_state_dict(model_state_dict, name_conversion_dict):
+    m_sd = {}
+    for k, v in model_state_dict.items():
+        if k in name_conversion_dict.keys():
+            m_sd[name_conversion_dict[k]] = v
+        else:
+            m_sd[k] = v
+
+    return m_sd
+
+
+def convert_optimizers_state_dict(optimizers_state_dict, name_conversion_dict):
+    optimizers = {}
+    for optimizer in optimizers_state_dict.keys():
+        optimizers[optimizer] = optimizers_state_dict[optimizer]
+        renamed_optimizers = {}
+        for k, v in optimizers_state_dict[optimizer]['state'].items():
+            replace_key = k
+            if k in name_conversion_dict.keys():
+                replace_key = name_conversion_dict[k]
+            renamed_optimizers[replace_key] = v 
+        optimizers[optimizer]['state'] = renamed_optimizers
+
+    return optimizers
+
+
 def load_sharded_checkpoint(
     source_path: str,
     state: State,
@@ -403,34 +444,7 @@ def load_sharded_checkpoint(
             # 1. Load just model first.
             model_state_dict = {'state': {'model': state.state_dict()['model']}}
 
-            from collections import OrderedDict
-            from torch.distributed.checkpoint._nested_dict import flatten_state_dict
-            from torch.distributed.checkpoint._sharded_tensor_utils import _flatten_sharded_tensors
-
-            # handle FSDP modules with custom process groups
-            name_conversion_dict = {}
-            world_size = dist.get_world_size()
-            for m_n, m in state.model.named_modules():
-                if hasattr(m, 'process_group'):
-                    pg = m.process_group
-                    pgs = torch.distributed.get_world_size(pg)
-                    if pgs != world_size:
-                        pgidx = dist.get_global_rank() % pgs
-                        _m_n = m_n.replace('_fsdp_wrapped_module.', '')
-                        for k in m.state_dict().keys():
-                            name_conversion_dict['.'.join((_m_n, k))] = '.'.join((_m_n, k + f'_pgidx{pgidx}'))
-
-            def convert_model_state_dict(model_state_dict, name_conversion_dict):
-                m_sd = OrderedDict()
-                for k, v in model_state_dict.items():
-                    if k in name_conversion_dict.keys():
-                        m_sd[name_conversion_dict[k]] = v
-                    else:
-                        m_sd[k] = v
-
-                return m_sd
-
-            class RenameLoadPlanner(torch.distributed.checkpoint.DefaultLoadPlanner):
+            class RenameLoadPlanner(dist_cp.DefaultLoadPlanner):
 
                 def set_up_planner(
                     self,
@@ -438,6 +452,9 @@ def load_sharded_checkpoint(
                     metadata: Metadata,
                     is_coordinator: bool,
                 ) -> None:
+                    from torch.distributed.checkpoint._nested_dict import flatten_state_dict
+                    from torch.distributed.checkpoint._sharded_tensor_utils import _flatten_sharded_tensors
+
                     self.original_state_dict = state_dict
 
                     state_dict = {
@@ -445,12 +462,12 @@ def load_sharded_checkpoint(
                             'model': {k:v for k, v in state_dict['state']['model'].items()},
                         },
                     }
+                    name_conversion_dict = get_name_conversion_dict(state)
 
                     if name_conversion_dict:
                         model_state_dict = convert_model_state_dict(state_dict['state']['model'], name_conversion_dict)
                         state_dict['state']['model'] = model_state_dict
 
-                    # super call
                     if self.flatten_sharded_tensors:
                         state_dict = _flatten_sharded_tensors(state_dict)
 
@@ -876,53 +893,17 @@ def save_checkpoint(
         import torch.distributed.checkpoint as dist_cp
         log.debug('Saving sharded checkpoints to %s...', save_filename)
 
-        from collections import OrderedDict
-
-        # handle FSDP modules with custom process groups
-        name_conversion_dict = {}
-        world_size = dist.get_world_size()
-        for m_n, m in state.model.named_modules():
-            if hasattr(m, 'process_group'):
-                pg = m.process_group
-                pgs = torch.distributed.get_world_size(pg)
-                if pgs != world_size:
-                    pgidx = dist.get_global_rank() % pgs
-                    _m_n = m_n.replace('_fsdp_wrapped_module.', '')
-                    for k in m.state_dict().keys():
-                        name_conversion_dict['.'.join((_m_n, k))] = '.'.join((_m_n, k + f'_pgidx{pgidx}'))
-
-        def convert_model_state_dict(model_state_dict, name_conversion_dict):
-            m_sd = OrderedDict()
-            for k, v in model_state_dict.items():
-                if k in name_conversion_dict.keys():
-                    m_sd[name_conversion_dict[k]] = v
-                else:
-                    m_sd[k] = v
-
-            return m_sd
-
-        def convert_optim_state_dict(optimizers_state_dict, name_conversion_dict):
-            optimizers = {}
-            for optimizer in optimizers_state_dict.keys():
-                optimizers[optimizer] = optimizers_state_dict[optimizer]
-                renamed_optimizers = {}
-                for k, v in optimizers_state_dict[optimizer]['state'].items():
-                    replace_key = k
-                    if k in name_conversion_dict.keys():
-                        replace_key = name_conversion_dict[k]
-                    renamed_optimizers[replace_key] = v 
-                optimizers[optimizer]['state'] = renamed_optimizers
-
-            return optimizers
-
-        class RenameSavePlanner(torch.distributed.checkpoint.DefaultSavePlanner):
+        class RenameSavePlanner(dist_cp.DefaultSavePlanner):
+            # SavePlanner for when fsdp uses custom process_groups
             def set_up_planner(self, state_dict, is_coordinator):
+                name_conversion_dict = get_name_conversion_dict(state)
                 if name_conversion_dict:
                     model_state_dict = convert_model_state_dict(state_dict['state']['model'], name_conversion_dict)
                     state_dict['state']['model'] = model_state_dict
 
                     if 'optimizers' in state_dict.keys():
-                        state_dict['optimizers'] = convert_optim_state_dict(state_dict['optimizers'], name_conversion_dict)
+                        optimizers = convert_optimizers_state_dict(state_dict['optimizers'], name_conversion_dict)
+                        state_dict['optimizers'] = optimizers
 
                 super().set_up_planner(state_dict, is_coordinator)
 
