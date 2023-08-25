@@ -300,10 +300,11 @@ def get_name_conversion_dict(state):
     world_size = dist.get_world_size()
     for m_n, m in state.model.named_modules():
         if hasattr(m, 'process_group'):
-            pg = m.process_group
+            pg = m.process_group  # pg used by fsdp
             pgs = torch.distributed.get_world_size(pg)
             if pgs != world_size:
-                pgidx = dist.get_global_rank() % pgs
+                epgs = world_size // pgs  # size of pg used by experts
+                pgidx = dist.get_global_rank() % epgs
                 _m_n = m_n.replace('_fsdp_wrapped_module.', '')
                 for k in m.state_dict().keys():
                     name_conversion_dict['.'.join((_m_n, k))] = '.'.join((_m_n, k + f'_pgidx{pgidx}'))
